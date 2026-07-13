@@ -49,7 +49,7 @@ set "CC=%CC_WRAPPER%"
 
 echo.
 echo [1/3] ±‡“Î Go æ≤Ã¨ø‚...
-go build -buildmode=c-archive -trimpath -ldflags="-s -w" -o "%TEMP_DIR%\go_plugin.a" .
+go build -buildvcs=false -buildmode=c-archive -trimpath -ldflags="-s -w" -o "%TEMP_DIR%\go_plugin.a" .
 if errorlevel 1 goto :failed
 
 echo [2/3] ¡¥Ω” 32 Œª DLL...

@@ -51,8 +51,10 @@ bee.Channel(channelID).SendImage("图片消息", imageURL)
 - 提供好友、群聊、频道、频道私信、频道事件和通常事件回调骨架。
 - 提供 Windows 原生 `build.bat`，不依赖 PowerShell、Python 或 Node.js。
 - 编译中间文件统一放入 `temp/`，完成后自动清理。
+- `build.bat` 固定使用 GBK/CP936 编码和 CRLF 换行，匹配 `chcp 936`，避免 Windows `cmd.exe` 中文乱码或误解析。
 - 最终 DLL 统一输出到 `build/`，自动剥离符号并清理 PDB。
-- 支持 Go 1.25 在 Windows 构建 `c-archive` 时所需的 `zig ar` 包装。
+- 支持 Go 1.25 在 Windows构建 `c-archive` 时所需的 `zig ar` 包装。
+- 内置 `C + Win32 + GDI+` 简约现代化设置窗口；保留 `WS_CAPTION` 等系统框架样式供 DWM 识别，通过 `WM_NCCALCSIZE` 将可见非客户区压缩为 0，并用 `DwmExtendFrameIntoClientArea(1px)` 保留系统阴影；客户区自绘标题栏、关闭按钮和现代 UI，顶部可拖动，窗口不可缩放。
 
 ## 验证状态
 
@@ -118,12 +120,16 @@ Bee 框架 API
 Bee开发模板-GOLANG/
 ├── plugin_main.go       # 插件信息、生命周期、消息和事件回调
 ├── bee_sdk.go           # 完整 Bee Go SDK、操作码、类型和辅助方法
-├── settings.go          # 插件设置窗口
+├── settings.go          # Go 与原生设置窗口的调用入口
 ├── build.bat            # Windows 一键编译
 ├── go.mod               # Go 模块配置
 ├── README.md            # 项目说明
 ├── API参考.md           # API 分类、操作码和参数参考
 ├── AI开发指南.md        # 给 AI 编程助手使用的强约束文档
+├── 设置窗口设计规范.md  # Win32/GDI+/DWM 窗口设计和验收规范
+├── settings_window/     # 设置窗口相关代码（不放入 other）
+│   ├── settings_window.c # C + Win32 + GDI+ 窗口实现
+│   └── settings_window.h # 窗口公开接口
 └── other/
     ├── bee_bridge.c     # Bee stdcall 到 Go 的 C ABI 桥接
     └── BeePlugin.def    # 11 个中文导出名称，GBK 编码
@@ -135,6 +141,10 @@ Bee开发模板-GOLANG/
 temp/                    # 临时目录，成功或失败后自动删除
 build/                   # 最终 DLL 输出目录，编译后保留
 ```
+
+`settings_window/` 专门存放界面代码。`other/` 仍只存放 Bee ABI 桥接和导出定义等低频固定文件。
+
+修改设置窗口前必须阅读 [设置窗口设计规范.md](./设置窗口设计规范.md)。该文档规定非客户区处理、DWM 阴影、固定尺寸、拖动命中、双缓冲文字绘制、生命周期和 UI 验收要求。
 
 ## 环境要求
 
@@ -391,6 +401,8 @@ build/我的插件.dll
 5. 删除 temp/
 6. 将最终 DLL 保留在 build/
 ```
+
+Go 构建命令使用 `-buildvcs=false`，不会读取或写入 Git 提交信息。这样即使模板位于损坏的仓库、受 Git `safe.directory` 限制的目录、从压缩包解压的目录，或机器上没有可用 Git，也不会因 VCS 状态获取失败而中断编译。
 
 编译失败时窗口不会立即关闭，会保留错误信息并等待按键。
 

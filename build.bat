@@ -53,7 +53,7 @@ go build -buildvcs=false -buildmode=c-archive -trimpath -ldflags="-s -w" -o "%TE
 if errorlevel 1 goto :failed
 
 echo [2/3] 链接 32 位 DLL...
-zig cc -target x86-windows-gnu -O2 -s -shared other\bee_bridge.c "%TEMP_DIR%\go_plugin.a" other\BeePlugin.def -I"%TEMP_DIR%" -luser32 -lkernel32 -lws2_32 -lntdll -o "%BUILD_DIR%\%OUTPUT_NAME%.dll"
+zig cc -target x86-windows-gnu -O2 -s -shared other\bee_bridge.c settings_window\settings_window.c "%TEMP_DIR%\go_plugin.a" other\BeePlugin.def -I"%TEMP_DIR%" -I. -luser32 -lkernel32 -lgdi32 -lgdiplus -lole32 -luuid -lws2_32 -lntdll -o "%BUILD_DIR%\%OUTPUT_NAME%.dll"
 if errorlevel 1 goto :failed
 if exist "%BUILD_DIR%\%OUTPUT_NAME%.pdb" del /q "%BUILD_DIR%\%OUTPUT_NAME%.pdb"
 
@@ -62,7 +62,7 @@ if exist "%TEMP_DIR%" rmdir /s /q "%TEMP_DIR%"
 
 set "EXIT_CODE=0"
 echo.
-echo [成功] 已生成：%BUILD_DIR%\%OUTPUT_NAME%.dll
+echo [成功] 编译完成：%BUILD_DIR%\%OUTPUT_NAME%.dll
 goto :finish
 
 :no_go

@@ -75,6 +75,8 @@ if err != nil {
 | 60 | `SendAdaptivePrivateMessage` | 在好友/频道私信场景自适应发送 |
 | 69 | `SendGroupFile` | 发送群文件 |
 | 70 | `SendFriendFile` | 发送好友文件 |
+| 71 | `SendGroupReply` | 发送群引用消息 |
+| 72 | `SendFriendReply` | 发送好友引用消息 |
 
 ## 卡片、Markdown 和按钮
 

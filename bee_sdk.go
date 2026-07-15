@@ -98,6 +98,8 @@ const (
 	OpGetRobotSecret             = 68
 	OpSendGroupFile              = 69
 	OpSendFriendFile             = 70
+	OpSendGroupReply             = 71
+	OpSendFriendReply            = 72
 )
 
 // ==================== types.go ====================
@@ -480,6 +482,15 @@ func sendMedia(ctx *RobotContext, op int, target, file string, deleteFile, activ
 	return ctx.Call(op, args...)
 }
 
+func sendReply(ctx *RobotContext, op int, target, quotedMessageID, content, image string, deleteImage, active bool, recallInteraction *bool) (string, error) {
+	messageID, eventID := activeIDs(ctx, active)
+	args := []string{target, quotedMessageID, content, image, boolText(deleteImage), messageID, eventID}
+	if recallInteraction != nil {
+		args = append(args, boolText(*recallInteraction))
+	}
+	return ctx.Call(op, args...)
+}
+
 func sendCard(ctx *RobotContext, op int, target string, fields []string, active bool, recallInteraction *bool) (string, error) {
 	messageID, eventID := activeIDs(ctx, active)
 	args := append([]string{target}, fields...)
@@ -571,6 +582,16 @@ func (ctx *RobotContext) SendFriendFile(friendID, file string, deleteFile, activ
 func (ctx *RobotContext) SendChannelReply(channelID, quotedMessageID, content, image string, active bool) (string, error) {
 	messageID, eventID := activeIDs(ctx, active)
 	return ctx.Call(OpSendChannelReply, channelID, quotedMessageID, content, image, messageID, eventID)
+}
+
+// SendGroupReply 发送群引用消息；active 为 true 时使用主动消息模式。
+func (ctx *RobotContext) SendGroupReply(groupID, quotedMessageID, content, image string, deleteImage, active bool) (string, error) {
+	return sendReply(ctx, OpSendGroupReply, groupID, quotedMessageID, content, image, deleteImage, active, nil)
+}
+
+// SendFriendReply 发送好友引用消息；active 为 true 时使用主动消息模式。
+func (ctx *RobotContext) SendFriendReply(friendID, quotedMessageID, content, image string, deleteImage, active, recallInteraction bool) (string, error) {
+	return sendReply(ctx, OpSendFriendReply, friendID, quotedMessageID, content, image, deleteImage, active, &recallInteraction)
 }
 
 // SendChannelCustom 发送对应类型的 Bee 消息；active 为 true 时使用主动消息模式。
@@ -1004,9 +1025,16 @@ func (target *MessageTarget) SendLargeCard(title, subtitle, preview, imageURL, j
 	return target.ctx.SendChannelLargeCard(target.targetID, title, subtitle, preview, imageURL, jumpURL, false)
 }
 
-// Reply 发送频道引用消息；仅用于 Channel 目标。
+// Reply 发送引用消息，按当前目标自动选择频道、群或好友引用接口。
 func (target *MessageTarget) Reply(messageID, content, image string) (string, error) {
-	return target.ctx.SendChannelReply(target.targetID, messageID, content, image, false)
+	switch target.kind {
+	case targetFriend:
+		return target.ctx.SendFriendReply(target.targetID, messageID, content, image, false, false, false)
+	case targetGroup:
+		return target.ctx.SendGroupReply(target.targetID, messageID, content, image, false, false)
+	default:
+		return target.ctx.SendChannelReply(target.targetID, messageID, content, image, false)
+	}
 }
 
 // ParseRobotContext 从 JSON 解析机器人上下文和框架 API 地址。

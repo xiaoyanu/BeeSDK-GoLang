@@ -199,6 +199,7 @@ return MessageIntercept // 1，拦截后续插件
 - 设置窗口：`settings.go` 只保留 Go 调用入口；全部 Win32/GDI+ 界面代码放在 `settings_window/`，不要放进 `other/`。
 - 修改窗口前必须阅读并遵守同目录的 `设置窗口设计规范.md`；不得自行改回标准可见非客户区、模拟窗口阴影或把文字绘制穿插在活动的 GDI+ 绘制过程中。
 - API、数据类型、操作码和辅助方法统一位于 `bee_sdk.go`。
+- 插件持久数据、配置、数据库、缓存和日志必须写入 `运行目录\plugin_data\插件名称\`；“Bee 框架根目录”实现上就是取运行目录，不要写到 DLL 同目录、`plugin\` 或 `temp_plugin\`。
 - 不要修改 `other/bee_bridge.c`，也不要把业务逻辑写入桥接层。
 
 ## 编码规范

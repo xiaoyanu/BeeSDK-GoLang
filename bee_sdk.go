@@ -226,15 +226,20 @@ type MarkdownMessage struct {
 
 // Button 表示 Markdown 自定义键盘中的一个按钮。
 type Button struct {
-	Label        string
-	VisitedLabel string
-	Style        int
-	Type         int
-	Permission   int
-	UserIDs      []string
-	RoleIDs      []string
-	Data         string
-	Enter        bool
+	Label                string
+	VisitedLabel         string
+	Style                int
+	Type                 int
+	Permission           int
+	UserIDs              []string
+	RoleIDs              []string
+	Data                 string
+	Reply                bool
+	Enter                bool
+	Anchor               int
+	ClickLimit           int
+	AtBotShowChannelList bool
+	UnsupportTips        string
 }
 
 // ==================== api.go ====================
@@ -763,10 +768,15 @@ type keyboardRender struct {
 	Style        int    `json:"style"`
 }
 type keyboardAction struct {
-	Type       int                `json:"type"`
-	Permission keyboardPermission `json:"permission"`
-	Data       string             `json:"data"`
-	Enter      bool               `json:"enter"`
+	Type                 int                `json:"type"`
+	Permission           keyboardPermission `json:"permission"`
+	Data                 string             `json:"data"`
+	Reply                bool               `json:"reply,omitempty"`
+	Enter                bool               `json:"enter,omitempty"`
+	Anchor               int                `json:"anchor,omitempty"`
+	ClickLimit           int                `json:"click_limit,omitempty"`
+	AtBotShowChannelList bool               `json:"at_bot_show_channel_list,omitempty"`
+	UnsupportTips        string             `json:"unsupport_tips,omitempty"`
 }
 type keyboardPermission struct {
 	Type           int      `json:"type"`
@@ -804,7 +814,17 @@ func BuildKeyboard(botAppID string, rows [][]Button) (string, error) {
 			outRow.Buttons = append(outRow.Buttons, keyboardButton{
 				ID:         fmt.Sprintf("%d_%d", rowIndex, columnIndex),
 				RenderData: keyboardRender{Label: label, VisitedLabel: visited, Style: button.Style},
-				Action:     keyboardAction{Type: button.Type, Permission: keyboardPermission{Type: button.Permission, SpecifyUserIDs: button.UserIDs, SpecifyRoleIDs: button.RoleIDs}, Data: data, Enter: button.Enter},
+				Action: keyboardAction{
+					Type:                 button.Type,
+					Permission:           keyboardPermission{Type: button.Permission, SpecifyUserIDs: button.UserIDs, SpecifyRoleIDs: button.RoleIDs},
+					Data:                 data,
+					Reply:                button.Reply,
+					Enter:                button.Enter,
+					Anchor:               button.Anchor,
+					ClickLimit:           button.ClickLimit,
+					AtBotShowChannelList: button.AtBotShowChannelList,
+					UnsupportTips:        button.UnsupportTips,
+				},
 			})
 		}
 		result.Content.Rows = append(result.Content.Rows, outRow)

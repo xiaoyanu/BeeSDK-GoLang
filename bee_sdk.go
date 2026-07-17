@@ -1,29 +1,23 @@
 package main
 
-/*
-#include <stdint.h>
-#include <stdlib.h>
-
-typedef char* (__stdcall *BeeAPIFn)(char*);
-static char* bee_call_api(uintptr_t address, char* command) {
-    if (address == 0) return NULL;
-    return ((BeeAPIFn)address)(command);
-}
-*/
-import "C"
-
 import (
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
-	"syscall"
+	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf16"
-	"unsafe"
+
+	"golang.org/x/text/encoding/simplifiedchinese"
+	"golang.org/x/text/transform"
 )
 
 // ==================== opcodes.go ====================
@@ -107,38 +101,72 @@ const (
 type EventType string
 
 const (
-	EventGuildCreate           EventType = "GUILD_CREATE"
-	EventGuildUpdate           EventType = "GUILD_UPDATE"
-	EventGuildDelete           EventType = "GUILD_DELETE"
-	EventChannelCreate         EventType = "CHANNEL_CREATE"
-	EventChannelUpdate         EventType = "CHANNEL_UPDATE"
-	EventChannelDelete         EventType = "CHANNEL_DELETE"
-	EventGuildMemberAdd        EventType = "GUILD_MEMBER_ADD"
-	EventGuildMemberUpdate     EventType = "GUILD_MEMBER_UPDATE"
-	EventGuildMemberRemove     EventType = "GUILD_MEMBER_REMOVE"
-	EventMessageDelete         EventType = "MESSAGE_DELETE"
-	EventMessageReactionAdd    EventType = "MESSAGE_REACTION_ADD"
+	// EventGuildCreate 表示机器人加入新频道。
+	EventGuildCreate EventType = "GUILD_CREATE"
+	// EventGuildUpdate 表示频道资料发生变更。
+	EventGuildUpdate EventType = "GUILD_UPDATE"
+	// EventGuildDelete 表示机器人被移除或频道解散，机器人退出该频道。
+	EventGuildDelete EventType = "GUILD_DELETE"
+	// EventChannelCreate 表示子频道被创建。
+	EventChannelCreate EventType = "CHANNEL_CREATE"
+	// EventChannelUpdate 表示子频道被更新，例如修改名称或新置顶精华。
+	EventChannelUpdate EventType = "CHANNEL_UPDATE"
+	// EventChannelDelete 表示子频道被删除。
+	EventChannelDelete EventType = "CHANNEL_DELETE"
+	// EventGuildMemberAdd 表示有人加入频道。
+	EventGuildMemberAdd EventType = "GUILD_MEMBER_ADD"
+	// EventGuildMemberUpdate 表示频道成员资料发生变更。
+	EventGuildMemberUpdate EventType = "GUILD_MEMBER_UPDATE"
+	// EventGuildMemberRemove 表示某人被踢出或移除频道。
+	EventGuildMemberRemove EventType = "GUILD_MEMBER_REMOVE"
+	// EventMessageDelete 表示频道中有人撤回消息。
+	EventMessageDelete EventType = "MESSAGE_DELETE"
+	// EventMessageReactionAdd 表示有人为频道消息添加表情表态。
+	EventMessageReactionAdd EventType = "MESSAGE_REACTION_ADD"
+	// EventMessageReactionRemove 表示有人为频道消息删除表情表态。
 	EventMessageReactionRemove EventType = "MESSAGE_REACTION_REMOVE"
-	EventForumThreadCreate     EventType = "FORUM_THREAD_CREATE"
-	EventForumThreadUpdate     EventType = "FORUM_THREAD_UPDATE"
-	EventForumThreadDelete     EventType = "FORUM_THREAD_DELETE"
-	EventForumPostCreate       EventType = "FORUM_POST_CREATE"
-	EventForumPostDelete       EventType = "FORUM_POST_DELETE"
-	EventForumReplyCreate      EventType = "FORUM_REPLY_CREATE"
-	EventForumReplyDelete      EventType = "FORUM_REPLY_DELETE"
-	EventAudioLiveEnter        EventType = "AUDIO_OR_LIVE_CHANNEL_MEMBER_ENTER"
-	EventAudioLiveExit         EventType = "AUDIO_OR_LIVE_CHANNEL_MEMBER_EXIT"
-	EventGroupAddRobot         EventType = "GROUP_ADD_ROBOT"
-	EventGroupDelRobot         EventType = "GROUP_DEL_ROBOT"
-	EventGroupMessageReject    EventType = "GROUP_MSG_REJECT"
-	EventGroupMessageReceive   EventType = "GROUP_MSG_RECEIVE"
-	EventFriendAdd             EventType = "FRIEND_ADD"
-	EventFriendDelete          EventType = "FRIEND_DEL"
-	EventC2CMessageReject      EventType = "C2C_MSG_REJECT"
-	EventC2CMessageReceive     EventType = "C2C_MSG_RECEIVE"
-	EventGroupMemberAdd        EventType = "GROUP_MEMBER_ADD"
-	EventGroupMemberRemove     EventType = "GROUP_MEMBER_REMOVE"
-	EventInteractionCreate     EventType = "INTERACTION_CREATE"
+	// EventForumThreadCreate 表示有人发布主题。
+	EventForumThreadCreate EventType = "FORUM_THREAD_CREATE"
+	// EventForumThreadUpdate 表示有人更新或修改主题。
+	EventForumThreadUpdate EventType = "FORUM_THREAD_UPDATE"
+	// EventForumThreadDelete 表示有人删除主题。
+	EventForumThreadDelete EventType = "FORUM_THREAD_DELETE"
+	// EventForumPostCreate 表示有人发布帖子。
+	EventForumPostCreate EventType = "FORUM_POST_CREATE"
+	// EventForumReplyDelete 表示有人删除评论。
+	EventForumReplyDelete EventType = "FORUM_REPLY_DELETE"
+	// EventForumPostDelete 表示有人删除帖子。
+	EventForumPostDelete EventType = "FORUM_POST_DELETE"
+	// EventForumReplyCreate 表示有人回复帖子或主题。
+	EventForumReplyCreate EventType = "FORUM_REPLY_CREATE"
+	// EventAudioLiveEnter 表示有人进入音视直播子频道。
+	EventAudioLiveEnter EventType = "AUDIO_OR_LIVE_CHANNEL_MEMBER_ENTER"
+	// EventAudioLiveExit 表示有人离开音视直播子频道。
+	EventAudioLiveExit EventType = "AUDIO_OR_LIVE_CHANNEL_MEMBER_EXIT"
+
+	// EventGroupAddRobot 表示机器人被添加到群聊。
+	EventGroupAddRobot EventType = "GROUP_ADD_ROBOT"
+	// EventGroupDelRobot 表示机器人被移出群聊。
+	EventGroupDelRobot EventType = "GROUP_DEL_ROBOT"
+	// EventGroupMessageReject 表示群管理员关闭通知，拒绝机器人主动消息。
+	EventGroupMessageReject EventType = "GROUP_MSG_REJECT"
+	// EventGroupMessageReceive 表示群管理员开启通知，接受机器人主动消息。
+	EventGroupMessageReceive EventType = "GROUP_MSG_RECEIVE"
+	// EventFriendAdd 表示用户添加机器人为好友。
+	EventFriendAdd EventType = "FRIEND_ADD"
+	// EventFriendDelete 表示用户删除机器人好友。
+	EventFriendDelete EventType = "FRIEND_DEL"
+	// EventC2CMessageReject 表示好友关闭通知，拒绝机器人主动私聊消息。
+	EventC2CMessageReject EventType = "C2C_MSG_REJECT"
+	// EventC2CMessageReceive 表示好友开启通知，接受机器人主动私聊消息。
+	EventC2CMessageReceive EventType = "C2C_MSG_RECEIVE"
+	// EventGroupMemberAdd 表示有人加入群聊。
+	EventGroupMemberAdd EventType = "GROUP_MEMBER_ADD"
+	// EventGroupMemberRemove 表示某人被踢出或移除群聊。
+	EventGroupMemberRemove EventType = "GROUP_MEMBER_REMOVE"
+
+	// EventInteractionCreate 表示有人触发按钮回调，频道、群聊和私聊场景共用此事件值。
+	EventInteractionCreate EventType = "INTERACTION_CREATE"
 )
 
 // GuildInfo 表示频道详细信息。
@@ -833,50 +861,6 @@ func BuildKeyboard(botAppID string, rows [][]Button) (string, error) {
 	return string(data), err
 }
 
-// ==================== windows.go ====================
-var (
-	kernel32                = syscall.NewLazyDLL("kernel32.dll")
-	user32                  = syscall.NewLazyDLL("user32.dll")
-	procMultiByteToWideChar = kernel32.NewProc("MultiByteToWideChar")
-	procWideCharToMultiByte = kernel32.NewProc("WideCharToMultiByte")
-	procMessageBoxW         = user32.NewProc("MessageBoxW")
-)
-
-const cpGBK = 936
-
-func gbkToUTF8(src []byte) string {
-	if len(src) == 0 {
-		return ""
-	}
-	n, _, _ := procMultiByteToWideChar.Call(cpGBK, 0, uintptr(unsafe.Pointer(&src[0])), uintptr(len(src)), 0, 0)
-	if n == 0 {
-		return ""
-	}
-	wide := make([]uint16, n)
-	procMultiByteToWideChar.Call(cpGBK, 0, uintptr(unsafe.Pointer(&src[0])), uintptr(len(src)), uintptr(unsafe.Pointer(&wide[0])), n)
-	return string(utf16.Decode(wide))
-}
-
-func utf8ToGBK(src []byte) []byte {
-	wide := utf16.Encode([]rune(string(src)))
-	if len(wide) == 0 {
-		return nil
-	}
-	n, _, _ := procWideCharToMultiByte.Call(cpGBK, 0, uintptr(unsafe.Pointer(&wide[0])), uintptr(len(wide)), 0, 0, 0, 0)
-	if n == 0 {
-		return nil
-	}
-	out := make([]byte, n)
-	procWideCharToMultiByte.Call(cpGBK, 0, uintptr(unsafe.Pointer(&wide[0])), uintptr(len(wide)), uintptr(unsafe.Pointer(&out[0])), n, 0, 0)
-	return out
-}
-
-func messageBox(text string) {
-	t, _ := syscall.UTF16PtrFromString(text)
-	caption, _ := syscall.UTF16PtrFromString("Bee Go SDK")
-	procMessageBoxW.Call(0, uintptr(unsafe.Pointer(t)), uintptr(unsafe.Pointer(caption)), 0x40)
-}
-
 // ==================== sdk.go ====================
 // BeeSeparator 是 Bee 框架命令协议使用的字段分隔符。
 const BeeSeparator = "%@#bee#@%"
@@ -892,8 +876,8 @@ const (
 
 // RobotContext 保存框架随事件传入的机器人上下文。
 type RobotContext struct {
-	API       uintptr         `json:"-"`
 	APIText   string          `json:"api"`
+	transport APITransport    `json:"-"`
 	Message   string          `json:"msg"`
 	MessageID string          `json:"msg_id"`
 	ChannelID string          `json:"channel_id"`
@@ -906,7 +890,8 @@ type RobotContext struct {
 }
 
 // BeeAPI 是面向插件开发者的简化 SDK 入口。
-// 它保存的是单次回调上下文快照，禁止跨消息保存为全局变量复用。
+// 它保存了创建时的回调上下文快照。依赖 msg_id、event_id 等当前上下文的操作不能跨回调复用；
+// 输出日志、取框架信息等不依赖消息或事件上下文的框架级操作可以复用有效对象。
 type BeeAPI struct {
 	ctx *RobotContext
 }
@@ -926,7 +911,8 @@ const (
 )
 
 // NewBeeAPI 根据当前 Bee 回调传入的最新机器人 JSON 创建简化 SDK 入口。
-// 每次收到消息或事件时都必须重新调用，确保 msg_id、event_id、api 和 plugin_id 属于当前回调。
+// 消息回复、撤回、按钮响应等上下文相关操作应在每次回调中重新创建，
+// 确保 msg_id、event_id 等数据属于当前回调。
 func NewBeeAPI(robotJSON string) (*BeeAPI, error) {
 	ctx, err := ParseRobotContext(robotJSON)
 	if err != nil {
@@ -938,6 +924,37 @@ func NewBeeAPI(robotJSON string) (*BeeAPI, error) {
 // Log 向 Bee 框架输出日志。
 func (api *BeeAPI) Log(content string) error {
 	return api.ctx.Log(content)
+}
+
+// GetAppDataDir 返回当前插件的应用数据目录。
+// 生产环境中 Worker 固定释放并运行于“Bee框架根目录\plugin_data\插件名称\”，
+// 因此使用 Worker 可执行文件所在目录，避免受到进程当前工作目录变化的影响。
+func (api *BeeAPI) GetAppDataDir() (string, error) {
+	executable, err := os.Executable()
+	if err != nil {
+		return "", fmt.Errorf("获取插件应用数据目录: %w", err)
+	}
+	executable, err = filepath.Abs(executable)
+	if err != nil {
+		return "", fmt.Errorf("规范化插件应用数据目录: %w", err)
+	}
+	return filepath.Clean(filepath.Dir(executable)), nil
+}
+
+// EventID 返回当前回调的事件 ID，按钮响应等上下文相关 API 会使用。
+func (api *BeeAPI) EventID() string {
+	if api == nil || api.ctx == nil {
+		return ""
+	}
+	return api.ctx.EventID
+}
+
+// RespondButton 响应当前按钮事件；responseType 的具体值按 Bee 按钮响应协议填写。
+func (api *BeeAPI) RespondButton(responseType int) (string, error) {
+	if api == nil || api.ctx == nil || api.ctx.EventID == "" {
+		return "", errors.New("当前回调缺少 event_id，无法响应按钮事件")
+	}
+	return api.ctx.RespondButton(api.ctx.EventID, responseType)
 }
 
 // Friend 绑定好友 ID，之后可直接调用 SendText、SendImage 等方法。
@@ -1059,18 +1076,18 @@ func (target *MessageTarget) Reply(messageID, content, image string) (string, er
 
 // ParseRobotContext 从 JSON 解析机器人上下文和框架 API 地址。
 func ParseRobotContext(text string) (*RobotContext, error) {
+	return ParseRobotContextWithTransport(text, currentAPITransport())
+}
+
+func ParseRobotContextWithTransport(text string, transport APITransport) (*RobotContext, error) {
 	var ctx RobotContext
 	if err := json.Unmarshal([]byte(text), &ctx); err != nil {
 		return nil, fmt.Errorf("解析机器人上下文: %w", err)
 	}
-	if ctx.APIText == "" {
-		return nil, errors.New("机器人上下文缺少 api")
+	if transport == nil {
+		return nil, errors.New("Bee API IPC transport 未连接")
 	}
-	address, err := strconv.ParseUint(ctx.APIText, 10, 32)
-	if err != nil || address == 0 {
-		return nil, fmt.Errorf("无效 api 地址 %q", ctx.APIText)
-	}
-	ctx.API = uintptr(address)
+	ctx.transport = transport
 	return &ctx, nil
 }
 
@@ -1098,11 +1115,13 @@ func encodeFrameworkText(value string) string {
 	var out strings.Builder
 	for _, r := range value {
 		text := string(r)
-		// Bee 的易语言边界只能稳定处理 GBK。GBK 可表示的文字原样保留；
-		// 其他 Unicode 字符转成 UTF-16 \uXXXX，非 BMP 字符会自动变成代理对。
-		if gbkToUTF8(utf8ToGBK([]byte(text))) == text {
-			out.WriteString(text)
-			continue
+		encoded, _, err := transform.String(simplifiedchinese.GBK.NewEncoder(), text)
+		if err == nil {
+			decoded, _, decodeErr := transform.String(simplifiedchinese.GBK.NewDecoder(), encoded)
+			if decodeErr == nil && decoded == text {
+				out.WriteString(text)
+				continue
+			}
 		}
 		for _, unit := range utf16.Encode([]rune{r}) {
 			fmt.Fprintf(&out, `\u%04X`, unit)
@@ -1116,18 +1135,12 @@ func encodeFrameworkText(value string) string {
 // 例如“哈哈😄”会转换为“哈哈\uD83D\uDE04”，再将整条命令转为 GBK。
 // 返回值按 GBK解码为 UTF-8；返回内存归框架所有。
 func (ctx *RobotContext) Call(op int, args ...string) (string, error) {
-	if ctx == nil || ctx.API == 0 {
-		return "", errors.New("无有效框架 API 地址")
+	if ctx == nil || ctx.transport == nil {
+		return "", errors.New("无有效 Bee API IPC transport")
 	}
 	command := encodeFrameworkText(ctx.command(op, args...))
-	commandGBK := utf8ToGBK([]byte(command))
-	cCommand := C.CString(string(commandGBK))
-	defer C.free(unsafe.Pointer(cCommand))
-	result := C.bee_call_api(C.uintptr_t(ctx.API), cCommand)
-	if result == nil {
-		return "", nil
-	}
-	return goText(result), nil
+	result, err := ctx.transport.Call([]byte(command))
+	return string(result), err
 }
 
 // CallBool 调用框架 API，并将返回值“1”转换为 true。
@@ -1148,4 +1161,77 @@ func activeIDs(ctx *RobotContext, active bool) (string, string) {
 		return "", ctx.EventID
 	}
 	return ctx.MessageID, ctx.EventID
+}
+
+var OpcodeNames = map[int]string{
+	1: "输出日志", 2: "发送频道消息", 3: "发送频道私信", 4: "取频道列表",
+	5: "取频道详细信息", 6: "取子频道列表", 7: "取子频道详细信息", 8: "创建子频道",
+	9: "取子频道在线人数", 10: "取频道成员详细", 11: "修改子频道", 12: "删除子频道",
+	13: "删除频道成员", 14: "取频道身份组列表", 15: "创建频道身份组", 16: "修改频道身份组",
+	17: "取是否频道主", 18: "取是否频道管理员", 19: "取是否子频道管理员", 20: "取是否指定频道身份组",
+	21: "删除频道身份组", 22: "添加频道成员到身份组", 23: "删除频道成员从身份组", 24: "撤回频道消息",
+	25: "发送频道引用消息", 26: "发送频道文字卡片消息", 27: "发送频道自定义消息", 28: "发送频道大图卡片消息",
+	29: "置频道禁言指定成员", 30: "置频道全员禁言", 31: "取机器人ID", 32: "取机器人信息",
+	33: "发送自适应消息", 34: "发送群消息", 35: "发送群视频消息", 36: "发送群语音消息",
+	37: "取框架信息", 38: "发送群Markdown消息", 39: "发送群文字卡片消息", 40: "取某人昵称",
+	41: "发送群大图卡片消息", 42: "发送自适应大图卡片消息", 43: "发送群缩略图卡片消息", 44: "发送频道缩略图卡片消息",
+	45: "上传图片到图床", 46: "响应按钮事件", 47: "发送频道Markdown消息", 48: "取机器人AppID",
+	49: "取某人头像", 50: "取某人头像_QQ", 51: "撤回群消息", 52: "发送好友消息",
+	53: "发送好友视频消息", 54: "发送好友语音消息", 55: "发送好友Markdown消息", 56: "发送好友文字卡片消息",
+	57: "发送好友大图卡片消息", 58: "发送好友缩略图卡片消息", 59: "撤回好友消息", 60: "发送自适应私信消息",
+	61: "发表频道表情表态", 62: "删除频道表情表态", 63: "取频道表情表态用户列表", 64: "取机器人统计信息",
+	65: "发送群按钮消息", 66: "发送好友按钮消息", 67: "取机器人Token", 68: "取机器人密钥",
+	69: "发送群文件", 70: "发送好友文件", 71: "发送群引用消息", 72: "发送好友引用消息",
+}
+
+// ==================== IPC transport ====================
+type APITransport interface {
+	Call(command []byte) ([]byte, error)
+}
+
+type messageWriter func(IPCMessage) error
+type messageReader func() (IPCMessage, error)
+
+type IPCClient struct {
+	mu     sync.Mutex
+	write  messageWriter
+	read   messageReader
+	nextID uint64
+}
+
+var activeTransport APITransport
+
+func setCurrentAPITransport(transport APITransport) { activeTransport = transport }
+func currentAPITransport() APITransport             { return activeTransport }
+
+func newIPCClientForTest(write messageWriter, read messageReader) *IPCClient {
+	return &IPCClient{write: write, read: read}
+}
+
+func (client *IPCClient) Call(command []byte) ([]byte, error) {
+	if client == nil || client.write == nil || client.read == nil {
+		return nil, errors.New("api_call IPC 未连接")
+	}
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	id := fmt.Sprintf("api-%d", atomic.AddUint64(&client.nextID, 1))
+	request := IPCMessage{Type: "api_call", ID: id, CommandB64: base64.StdEncoding.EncodeToString(command)}
+	if err := client.write(request); err != nil {
+		return nil, err
+	}
+	response, err := client.read()
+	if err != nil {
+		return nil, err
+	}
+	if response.Type != "api_result" || response.ID != id {
+		return nil, fmt.Errorf("api_result 不匹配: type=%q id=%q, want id=%q", response.Type, response.ID, id)
+	}
+	if response.Error != "" {
+		return nil, errors.New(response.Error)
+	}
+	value, err := base64.StdEncoding.DecodeString(response.ValueB64)
+	if err != nil {
+		return nil, fmt.Errorf("解码 api_result: %w", err)
+	}
+	return value, nil
 }

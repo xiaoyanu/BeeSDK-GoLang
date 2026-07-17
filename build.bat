@@ -1,104 +1,81 @@
 @echo off
 setlocal EnableExtensions DisableDelayedExpansion
+cd /d "%~dp0"
 chcp 936 >nul
-pushd "%~dp0" >nul 2>nul
-if errorlevel 1 goto :path_error
-
-set "EXIT_CODE=1"
-set "TEMP_DIR=%CD%\temp"
-set "BUILD_DIR=%CD%\build"
-set "CC_WRAPPER=%TEMP_DIR%\i686-w64-mingw32-gcc.bat"
-set "AR_WRAPPER=%TEMP_DIR%\ar.bat"
 
 echo ========================================
-echo       Bee Go 插件一键编译
+echo Bee Go 插件构建工具
 echo ========================================
 echo.
 
-where go >nul 2>nul
-if errorlevel 1 goto :no_go
-where zig >nul 2>nul
-if errorlevel 1 goto :no_zig
+where go >nul 2>nul || goto :missing_go
+where zig >nul 2>nul || goto :missing_zig
 
-if exist "%TEMP_DIR%" rmdir /s /q "%TEMP_DIR%"
-mkdir "%TEMP_DIR%"
-if errorlevel 1 goto :failed
-if not exist "%BUILD_DIR%" mkdir "%BUILD_DIR%"
-if errorlevel 1 goto :failed
+if exist temp rmdir /s /q temp
+mkdir temp || goto :fail
+if not exist build mkdir build || goto :fail
 
-set "OUTPUT_NAME="
-set /p "OUTPUT_NAME=请输入编译后的 DLL 文件名（直接回车使用 BeeGoPlugin）："
-if not defined OUTPUT_NAME set "OUTPUT_NAME=BeeGoPlugin"
+echo [1/4] 正在生成插件元数据...
+go run .\other\buildmeta plugin_main.go temp > temp\plugin_name.txt
+if errorlevel 1 goto :fail
+set /p "PLUGIN_NAME=" < temp\plugin_name.txt
+if not defined PLUGIN_NAME goto :metadata_empty
+del /q temp\plugin_name.txt >nul 2>nul
 
-if /i "%OUTPUT_NAME:~-4%"==".dll" set "OUTPUT_NAME=%OUTPUT_NAME:~0,-4%"
-if not defined OUTPUT_NAME goto :empty_name
+set "DLL_NAME=%~1"
+if not defined DLL_NAME set "DLL_NAME=%PLUGIN_NAME%"
+if /i "%DLL_NAME:~-4%"==".dll" set "DLL_NAME=%DLL_NAME:~0,-4%"
+if not defined DLL_NAME goto :invalid_name
 
+echo [2/4] 正在编译 Windows 32 位 Go 工作进程...
+set GOOS=windows
+set GOARCH=386
+set CGO_ENABLED=0
+go build -buildvcs=false -trimpath -ldflags="-s -w" -o temp\bee_go_worker.exe .
+set "BUILD_RESULT=%ERRORLEVEL%"
+del /q worker_runtime.go >nul 2>nul
+if not "%BUILD_RESULT%"=="0" goto :fail
+
+echo [3/4] 正在编译内嵌工作进程资源...
+pushd temp
+zig rc /c 65001 /fo worker.res worker.rc
+if errorlevel 1 (popd & goto :fail)
+popd
+
+echo [4/4] 正在链接纯 C PE32 插件 DLL...
+zig cc -target x86-windows-gnu -O2 -shared other\bee_bridge.c temp\worker.res other\BeePlugin.def -Itemp -lkernel32 -o "build\%DLL_NAME%.dll" || goto :fail
+
+del /q build\*.lib build\*.pdb >nul 2>nul
+rmdir /s /q temp
 echo.
-echo 开始编译...
+echo 构建成功：build\%DLL_NAME%.dll
+pause
+exit /b 0
 
->"%CC_WRAPPER%" echo @echo off
->>"%CC_WRAPPER%" echo zig cc -target x86-windows-gnu %%*
->"%AR_WRAPPER%" echo @echo off
->>"%AR_WRAPPER%" echo zig ar %%*
+:missing_go
+echo 错误：未在 PATH 环境变量中找到 Go。
+echo 请从官方网站下载安装：https://go.dev/dl/
+goto :error_exit
 
-set "PATH=%TEMP_DIR%;%PATH%"
-set "GOOS=windows"
-set "GOARCH=386"
-set "CGO_ENABLED=1"
-set "CC=%CC_WRAPPER%"
+:missing_zig
+echo 错误：未在 PATH 环境变量中找到 Zig。
+echo 请从官方网站下载安装：https://ziglang.org/download/
+goto :error_exit
 
+:metadata_empty
+echo 错误：插件元数据生成器返回的插件名称为空。
+goto :fail
+
+:invalid_name
+echo 错误：DLL 文件名无效。
+goto :fail
+
+:fail
+if exist worker_runtime.go del /q worker_runtime.go >nul 2>nul
+if exist temp rmdir /s /q temp
+echo 错误：构建失败，请检查上方的错误信息。
+
+:error_exit
 echo.
-echo [1/3] 编译 Go 静态库...
-go build -buildvcs=false -buildmode=c-archive -trimpath -ldflags="-s -w" -o "%TEMP_DIR%\go_plugin.a" .
-if errorlevel 1 goto :failed
-
-echo [2/3] 链接 32 位 DLL...
-zig cc -target x86-windows-gnu -O2 -s -shared other\bee_bridge.c settings_window\settings_window.c "%TEMP_DIR%\go_plugin.a" other\BeePlugin.def -I"%TEMP_DIR%" -I. -luser32 -lkernel32 -lgdi32 -lgdiplus -lole32 -luuid -lws2_32 -lntdll -o "%BUILD_DIR%\%OUTPUT_NAME%.dll"
-if errorlevel 1 goto :failed
-if exist "%BUILD_DIR%\%OUTPUT_NAME%.pdb" del /q "%BUILD_DIR%\%OUTPUT_NAME%.pdb"
-
-echo [3/3] 清理临时文件...
-if exist "%TEMP_DIR%" rmdir /s /q "%TEMP_DIR%"
-
-set "EXIT_CODE=0"
-echo.
-echo [成功] 编译完成：%BUILD_DIR%\%OUTPUT_NAME%.dll
-goto :finish
-
-:no_go
-echo [错误] 未找到 Go。
-echo 下载地址：https://go.dev/dl/
-echo 安装后请重新打开命令行窗口，再运行本脚本。
-goto :finish
-
-:no_zig
-echo [错误] 未找到 Zig。
-echo 下载地址：https://ziglang.org/download/
-echo 安装后请将 zig.exe 所在目录加入系统 PATH。
-goto :finish
-
-:empty_name
-echo [错误] DLL 文件名不能为空。
-goto :finish
-
-:path_error
-echo [错误] 无法进入模板所在目录。
-goto :finish_no_popd
-
-:failed
-echo.
-echo [失败] 编译未完成，请查看上方错误信息。
-if exist "%TEMP_DIR%" rmdir /s /q "%TEMP_DIR%"
-
-:finish
-echo.
-echo 按任意键关闭窗口...
-pause >nul
-popd >nul 2>nul
-exit /b %EXIT_CODE%
-
-:finish_no_popd
-echo.
-echo 按任意键关闭窗口...
-pause >nul
+pause
 exit /b 1
